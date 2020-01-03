@@ -1,19 +1,5 @@
 
   
-/*
- * i changed double to float for temp calculation and eliminated the timer also for temp calculation
- * changed the menu, added row and deleted the '#' should not need it, so also deleted stuff in writeUart accordingly
- * changed DAC SSs might have a problem with these
- *
- * Must change digital to initialize all ports 
- * Must change DAC stuff for different IC 
- *
- * Using Termite Terminal
- * USing SAME54P20A mcu on XPlained Pro developement board
- *
- * Created: 10/15/2018 11:49:12 AM
- * Author : bryant
- */ 
 
 #include "sam.h"
 #define DIR PORT_PB27;
@@ -28,6 +14,8 @@ void check(void);
 void terminal_UART_setup(void);	//USART
 void write_terminal(char *a);
 void convert(int a);
+void home(void);
+void change_filter(int a);
 
 
 volatile int cw = 0;	
@@ -35,11 +23,12 @@ volatile int ccw = 0;
 volatile int eic_counter;
 volatile int pls_counter = 0;
 volatile int correct;
-volatile int state = 0;
+volatile int motor_state = 0;
 volatile int state1 = 0;
 volatile char convert_array[4];
 volatile char *convert_array_ptr;
 volatile int Z = 0;
+volatile int home_state = 0;
 
 int main(void){
 
@@ -49,6 +38,12 @@ int main(void){
 	port_setup();
 	motor_EIC_setup();
 	terminal_UART_setup();
+	home();
+	
+	change_filter(5);
+	
+	
+	
 	
 	volatile char startArr[] = "Start\n";
 	volatile char *startPtr;
@@ -64,69 +59,67 @@ int main(void){
 	PortGroup *porA = &(por->Group[0]);
 	PortGroup *porB = &(por->Group[1]);
 
-	//porB->OUTCLR.reg = PLS;
 	
-	/* Polling loop looking for Terminal request */
 	while(1){
-		switch(state1){
-			case 0 :
-				if(Z){
-					state1 = 1;
-					Z = 0;
-					eic_counter = 0;
-					wait(10);
-					break;
-				}
-				else{
-					switch(state){
-						case 0:	//idle
-						porB->OUTCLR.reg = PLS;
-						state = 1;
-						break;
-						case 1: //move motor
-						porB->OUTSET.reg = PLS;
-						state = 0;
-						break;
-						default:
-						state = 0;
-					}
-					wait(1);
-					break;				
-				}
-			
-			case 1: 
-				if(Z){
-					state1 = 2;
-					Z = 0;
-					break;
-				}
-				else{
-					switch(state){
-						case 0:	//idle
-						porB->OUTCLR.reg = PLS;
-						state = 1;
-						break;
-						case 1: //move motor
-						porB->OUTSET.reg = PLS;
-						pls_counter++;
-						state = 0;
-						break;
-						default:
-						state = 0;
-					}
-					wait(1);
-					break;
-				}
-			case 2:
-				//convert(pls_counter);
-				convert(eic_counter);
-				pls_counter = 0;
-				state1 = 0;
-				Z = 0;
-				break;
-			default: state1 = 0;
-			break;
-		}
+		//switch(state1){
+			//case 0 :
+				//if(Z){
+					//state1 = 1;
+					//Z = 0;
+					//eic_counter = 0;
+					//wait(10);
+					//break;
+				//}
+				//else{
+					//switch(state){
+						//case 0:	//idle
+						//porB->OUTCLR.reg = PLS;
+						//state = 1;
+						//break;
+						//case 1: //move motor
+						//porB->OUTSET.reg = PLS;
+						//state = 0;
+						//break;
+						//default:
+						//state = 0;
+					//}
+					//wait(1);
+					//break;				
+				//}
+			//
+			//case 1: 
+				//if(Z){
+					//state1 = 2;
+					//Z = 0;
+					//break;
+				//}
+				//else{
+					//switch(state){
+						//case 0:	//idle
+						//porB->OUTCLR.reg = PLS;
+						//state = 1;
+						//break;
+						//case 1: //move motor
+						//porB->OUTSET.reg = PLS;
+						//pls_counter++;
+						//state = 0;
+						//break;
+						//default:
+						//state = 0;
+					//}
+					//wait(1);
+					//break;
+				//}
+			//case 2:
+				////convert(pls_counter);
+				//convert(eic_counter);
+				//pls_counter = 0;
+				//state1 = 0;
+				//Z = 0;
+				//break;
+			//default: state1 = 0;
+			//break;
+		//}
 		
 
 	}
@@ -339,4 +332,72 @@ void convert(int a){
 	}
 	convert_array[3] = 0;	//force pointer to end here
 	write_terminal(convert_array_ptr);
+}
+
+void home(void){
+	Port *por = PORT;
+	PortGroup *porA = &(por->Group[0]);
+	PortGroup *porB = &(por->Group[1]);
+	volatile int move_home = 0;
+	Z = 0;
+	
+	while(!Z){
+		switch(motor_state){
+			case 0:	//idle
+				porB->OUTCLR.reg = PLS;
+				motor_state = 1;
+				break;
+			case 1: //move motor
+				porB->OUTSET.reg = PLS;
+				motor_state = 0;
+				break;
+			default:
+				motor_state = 0;
+				break;
+		}
+		wait(1);
+	}
+	
+	porB->OUTSET.reg = DIR;
+	while(move_home != 66){
+		switch(motor_state){
+			case 0:	//idle
+				porB->OUTCLR.reg = PLS;
+				motor_state = 1;
+				break;
+			case 1: //move motor
+				porB->OUTSET.reg = PLS;
+				move_home++;
+				motor_state = 0;
+				break;
+			default:
+				motor_state = 0;
+		}
+		wait(1);
+	}
+}
+
+void change_filter(int a){
+	Port *por = PORT;
+	PortGroup *porA = &(por->Group[0]);
+	PortGroup *porB = &(por->Group[1]);
+	volatile int move_filter = 0;
+	
+	porB->OUTSET.reg = DIR;
+	while(move_filter != 133*a){
+		switch(motor_state){
+			case 0:	//idle
+			porB->OUTCLR.reg = PLS;
+			motor_state = 1;
+			break;
+			case 1: //move motor
+			porB->OUTSET.reg = PLS;
+			move_filter++;
+			motor_state = 0;
+			break;
+			default:
+			motor_state = 0;
+		}
+		wait(1);
+	}
 }
