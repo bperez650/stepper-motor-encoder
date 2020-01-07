@@ -1,9 +1,18 @@
+/**********************************************
+* motor control for oriental motor with encoder
+* open collector using 3.3V
+* 400ct/rev encoder using 800 microstep/rev
+* using interrrupt on phase A to confirm movement
+* Not checking phase B for direction
+* Using Z output for homing
+* has acceleration
+***********************************************/
 
   
 
 #include "sam.h"
-#define DIR PORT_PB27;
-#define PLS PORT_PB28;
+#define DIR PORT_PB27;	//controls direction of motor
+#define PLS PORT_PB28;	// pull down to microstep motor
 
 /* Prototypes */
 void clock_setup(void);
@@ -11,33 +20,22 @@ void port_setup(void);
 void wait(volatile int d);
 void accel_wait(volatile int d);
 void motor_EIC_setup(void);
-void check(void);
-void terminal_UART_setup(void);	//USART
+void terminal_UART_setup(void);	
 void write_terminal(char *a);
 void convert(int a);
 void home(void);
 void change_filter(int a);
 
-
-volatile int cw = 0;	
-volatile int ccw = 0;	
-volatile int eic_counter;
-volatile int pls_counter = 0;
-volatile int correct;
-
-volatile int state1 = 0;
+volatile int eic_counter;	//counts EIC pulse on phase A
 volatile char convert_array[4];
 volatile char *convert_array_ptr;
-volatile int Z = 0;
-volatile int home_state = 0;
-volatile int state = 0;
-volatile int speed = 1000;
-volatile int current_filter = 0;
+volatile int Z = 0;	//tracks Z output using EIC
+volatile int speed = 1000;	//length of wait for acceleration
+volatile int current_filter = 0;	//tracks current filter position
 
 
 int main(void){
 
-	/* Initializing functions*/
     SystemInit();	
 	clock_setup();
 	port_setup();
@@ -46,29 +44,13 @@ int main(void){
 	home();
 	wait(10);
 	change_filter(5);
-	wait(20);
-	change_filter(3);
-	wait(20);
+	wait(10);
 	change_filter(1);
-	wait(20);
-	change_filter(2);
-	wait(20);
-	change_filter(0);
-		wait(20);
-	change_filter(4);
-		wait(20);
-	change_filter(0);
-	
-	
-	
 	
 	volatile char startArr[] = "Start\n";
 	volatile char *startPtr;
 	startPtr = startArr;
-	write_terminal(startPtr);
-	
-	volatile int initial = 0;
-	
+	write_terminal(startPtr);	
 	convert_array_ptr = convert_array;
 
 	Port *por = PORT;
@@ -78,66 +60,6 @@ int main(void){
 
 	
 	while(1){
-		//switch(state1){
-			//case 0 :
-				//if(Z){
-					//state1 = 1;
-					//Z = 0;
-					//eic_counter = 0;
-					//wait(10);
-					//break;
-				//}
-				//else{
-					//switch(state){
-						//case 0:	//idle
-						//porB->OUTCLR.reg = PLS;
-						//state = 1;
-						//break;
-						//case 1: //move motor
-						//porB->OUTSET.reg = PLS;
-						//state = 0;
-						//break;
-						//default:
-						//state = 0;
-					//}
-					//wait(1);
-					//break;				
-				//}
-			//
-			//case 1: 
-				//if(Z){
-					//state1 = 2;
-					//Z = 0;
-					//break;
-				//}
-				//else{
-					//switch(state){
-						//case 0:	//idle
-						//porB->OUTCLR.reg = PLS;
-						//state = 1;
-						//break;
-						//case 1: //move motor
-						//porB->OUTSET.reg = PLS;
-						//pls_counter++;
-						//state = 0;
-						//break;
-						//default:
-						//state = 0;
-					//}
-					//wait(1);
-					//break;
-				//}
-			//case 2:
-				////convert(pls_counter);
-				//convert(eic_counter);
-				//pls_counter = 0;
-				//state1 = 0;
-				//Z = 0;
-				//break;
-			//default: state1 = 0;
-			//break;
-		//}
-		
 
 	}
 }
@@ -178,27 +100,23 @@ void port_setup(void){
 	porA->PINCFG[4].bit.PMUXEN = 1;	//PA05 pad1 Rx
 	porA->PMUX[2].bit.PMUXO = 3;
 	porA->PINCFG[5].bit.PMUXEN = 1;
-
-	//PORTs
-	porB->DIRCLR.reg = PORT_PB26; //phase B
-	porB->PINCFG[26].bit.INEN = 1;
 	
-	//!DIR=CCW
-	porB->DIRSET.reg = DIR;
-	porB->DIRSET.reg = PLS;
+	//ports for controlling motor
+	porB->DIRSET.reg = DIR;	//direction SET==CCW
+	porB->DIRSET.reg = PLS;	//pulse for microstepping motor
 	porB->OUTSET.reg = DIR;	//CCW
 	porB->OUTSET.reg = PLS;
 	
-	/* EIC Z */
+	/* EIC Z output*/
 	porA->PMUX[3].bit.PMUXE = 0;	//PA06 EXTINT[6]
 	porA->PINCFG[6].bit.PMUXEN = 1;
 	
-	/* EIC Phase A */
+	/* EIC Phase A output*/
 	porB->PMUX[2].bit.PMUXE = 0;	//PB04 EXTINT[4]
 	porB->PINCFG[4].bit.PMUXEN = 1;
 }
 
-/* EIC for encoder Z */
+/* EIC for phase A and Z output */
 void motor_EIC_setup(void){
 	EIC->CTRLA.reg = 0;
 	while(EIC->SYNCBUSY.reg){}
@@ -212,41 +130,30 @@ void motor_EIC_setup(void){
 	NVIC->ISER[0] |= 1<<18 | 1<<16;	//enable the NVIC handler
 }
 
-/* EIC handler for encoder */
+/* EIC handler for Z output 
+*  sets var Z high when Z output detected
+*  only used for homing   */
 void EIC_6_Handler(void){
 	Port *por = PORT;
 	PortGroup *porB = &(por->Group[1]);
 	EIC->INTFLAG.reg |= 1<<6;	//clear int flag
-	//convert(pls_counter);
 	Z = 1;
-	//if(eic_counter==200){
-		//convert((pls_counter));
-		//eic_counter = 0;
-		//pls_counter = 0;
-	//}
-	
-	//if(porB->IN.reg & PORT_PB26){
-		//cw = 1;
-		//ccw = 0;
-	//}
-	//else{
-		//cw = 0;
-		//ccw = 1;
-	//}
-	
 }
 
-/* EIC handler for encoder */
+/* EIC handler for phase A 
+*  counts the numnber of phase A pulses
+*  not checking direction */
 void EIC_4_Handler(void){
 	EIC->INTFLAG.reg |= 1<<4;	//clear int flag
 	eic_counter++;
 }
 
+/* controls sped of motor during homeing
+*  not used in acceleration */
 void wait(volatile int d){
 	int count = 0;
 	while (count < d*1000){
-		count++;
-	}
+		count++;}
 }
 
 void terminal_UART_setup(void){
@@ -352,47 +259,50 @@ void convert(int a){
 	write_terminal(convert_array_ptr);
 }
 
+/* Funciton for Homing motor
+*  turns CCW until Z output is detected
+*  then turns CW to filter 0 */
 void home(void){
 	Port *por = PORT;
-	PortGroup *porA = &(por->Group[0]);
 	PortGroup *porB = &(por->Group[1]);
-	volatile int move_home = 0;
-	volatile int motor_state = 0;
+	volatile int motor_state = 0;	//state for stepping state machine
 	Z = 0;
-	volatile int temp =  0;
 	
 	while(!Z){
-		switch(motor_state){
-			case 0:	//idle
+		/* First state machine is going CCW looking for Z output
+		*  microstepping state machine state0 pulls down and cause motor to step
+		*  state1 pulls up and motor doesnt move */
+		switch(motor_state){	
+			case 0:	//pull down microstep
 				porB->OUTCLR.reg = PLS;
 				motor_state = 1;
 				wait(1);
 				break;
-			case 1: //move motor
+			case 1: //pull up 
 				porB->OUTSET.reg = PLS;
 				motor_state = 0;
-				temp ++;
 				wait(1);
 				break;
 			default:
 				motor_state = 0;
 				break;
 		}
-		
 	}
-	
-	eic_counter = 0;
-	porB->OUTCLR.reg = DIR;
-	while(eic_counter < 34){
+	eic_counter = 0;	//reset eic_counter 
+	porB->OUTCLR.reg = DIR;	//change dir to CW
+	/* Seocnd state machine is going CW to set position, filter 0
+	* position of filter 0 is (encoder cts/rev / # of filters / 2) == (400/6/2 = 33.33)
+	*  microstepping state machine state0 pulls down and cause motor to step
+	*  state1 pulls up and motor doesnt move */
+	while(eic_counter < 34){	
 		switch(motor_state){
-			case 0:	//idle
+			case 0:	//pull down microstep
 				porB->OUTCLR.reg = PLS;
 				motor_state = 1;
 				wait(1);
 				break;
-			case 1: //move motor
+			case 1: //pull up
 				porB->OUTSET.reg = PLS;
-				move_home++;
 				motor_state = 0;
 				wait(1);
 				break;
@@ -404,11 +314,13 @@ void home(void){
 	}
 }
 
-
-
+/* Function for changing filter position
+*  takes in desired filter positon and compares to current position to determine direction of steps
+*  increasing filter postion = CW   e.g. fitler0 -> filter2
+*  acceleration state machine has bounded top and low speed 
+*  calls variable accel_wait() to change speed */ 
 void change_filter(int a){
 	Port *por = PORT;
-	PortGroup *porA = &(por->Group[0]);
 	PortGroup *porB = &(por->Group[1]);
 	volatile int accel_state = 0;
 	volatile int motor_state = 0;
@@ -416,7 +328,7 @@ void change_filter(int a){
 	volatile int steps;
 	eic_counter = 0;
 	
-	
+	/* determine direction of steps by comparing current and requested filter position */
 	if(a > current_filter){
 		porB->OUTCLR.reg = DIR;	//CW
 		steps = (a-current_filter)*67;
@@ -425,7 +337,7 @@ void change_filter(int a){
 		porB->OUTSET.reg = DIR;	//CCW
 		steps = (current_filter-a)*67;
 	}	
-		
+	/* Acceleration state machine*/ 
 	while(eic_counter < (steps+1)){
 		switch(accel_state){
 			case 0:	//slow start
@@ -462,55 +374,31 @@ void change_filter(int a){
 			default :
 				break;	
 		}
-		
+	
+		/*  microstepping state machine state0 pulls down and cause motor to step
+		*  state1 pulls up and motor doesnt move */
 		switch(motor_state){
-			case 0:	//idle
+			case 0:	//pull down microstep
 				porB->OUTCLR.reg = PLS;
 				motor_state = 1;
 				break;
-			case 1: //move motor
+			case 1: //pull up
 				porB->OUTSET.reg = PLS;
-				//move_filter++;
 				motor_state = 0;
 				break;
 			default:
 				motor_state = 0;
 		}
-		accel_wait(speed);
+		/* call wait function to change speed */ 
+		accel_wait(speed); 
 	}
-	current_filter = a;
+	current_filter = a;// stores current filter positon 
 }
 
+/* Tuneable wait function for changing speed of motor
+*  input pararm is desired speed */
 void accel_wait(volatile int d){
 	int count = 0;
-	
-	while (count < speed){
-		count++;
-	}
+	while (count < d){
+		count++;}
 }
-
-//void change_filter(int a){
-//Port *por = PORT;
-//PortGroup *porA = &(por->Group[0]);
-//PortGroup *porB = &(por->Group[1]);
-//volatile int move_filter = 0;
-//
-//eic_counter = 0;
-//porB->OUTCLR.reg = DIR;
-//while(eic_counter < ((66*a)+1)){
-//switch(motor_state){
-//case 0:	//idle
-//porB->OUTCLR.reg = PLS;
-//motor_state = 1;
-//break;
-//case 1: //move motor
-//porB->OUTSET.reg = PLS;
-////move_filter++;
-//motor_state = 0;
-//break;
-//default:
-//motor_state = 0;
-//}
-//wait(1);
-//}
-//}
