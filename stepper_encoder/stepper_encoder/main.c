@@ -9,6 +9,7 @@
 void clock_setup(void);
 void port_setup(void);
 void wait(volatile int d);
+void accel_wait(volatile int d);
 void motor_EIC_setup(void);
 void check(void);
 void terminal_UART_setup(void);	//USART
@@ -23,12 +24,16 @@ volatile int ccw = 0;
 volatile int eic_counter;
 volatile int pls_counter = 0;
 volatile int correct;
-volatile int motor_state = 0;
+
 volatile int state1 = 0;
 volatile char convert_array[4];
 volatile char *convert_array_ptr;
 volatile int Z = 0;
 volatile int home_state = 0;
+volatile int state = 0;
+volatile int speed = 1000;
+volatile int current_filter = 0;
+
 
 int main(void){
 
@@ -39,8 +44,20 @@ int main(void){
 	motor_EIC_setup();
 	terminal_UART_setup();
 	home();
-	
+	wait(10);
 	change_filter(5);
+	wait(20);
+	change_filter(3);
+	wait(20);
+	change_filter(1);
+	wait(20);
+	change_filter(2);
+	wait(20);
+	change_filter(0);
+		wait(20);
+	change_filter(4);
+		wait(20);
+	change_filter(0);
 	
 	
 	
@@ -53,11 +70,11 @@ int main(void){
 	volatile int initial = 0;
 	
 	convert_array_ptr = convert_array;
-	//terminal_input_array_ptr = terminal_input_array;
 
 	Port *por = PORT;
 	PortGroup *porA = &(por->Group[0]);
 	PortGroup *porB = &(por->Group[1]);
+
 
 	
 	while(1){
@@ -134,6 +151,7 @@ void clock_setup(void){
 	OSCCTRL->XOSCCTRL[1].bit.RUNSTDBY = 1;
 	OSCCTRL->XOSCCTRL[1].bit.XTALEN = 1;	//select ext crystal osc mode
 	OSCCTRL->XOSCCTRL[1].bit.ENABLE = 1;
+	OSC32KCTRL->OSCULP32K.bit.EN32K = 1;
 	
 	GCLK->GENCTRL[0].reg = GCLK_GENCTRL_SRC_XOSC1 | GCLK_GENCTRL_RUNSTDBY | !(GCLK_GENCTRL_DIVSEL) | GCLK_GENCTRL_OE | GCLK_GENCTRL_GENEN | GCLK_GENCTRL_DIV(12);	//divide by 12 = 1MHz
 	GCLK->GENCTRL[1].reg = GCLK_GENCTRL_SRC_XOSC1 | GCLK_GENCTRL_RUNSTDBY | !(GCLK_GENCTRL_DIVSEL) | GCLK_GENCTRL_OE | GCLK_GENCTRL_GENEN | GCLK_GENCTRL_DIV(1);	//divide by 1 = 12MHz
@@ -168,8 +186,8 @@ void port_setup(void){
 	//!DIR=CCW
 	porB->DIRSET.reg = DIR;
 	porB->DIRSET.reg = PLS;
-	porB->OUTCLR.reg = DIR;
-	porB->OUTCLR.reg = PLS;
+	porB->OUTSET.reg = DIR;	//CCW
+	porB->OUTSET.reg = PLS;
 	
 	/* EIC Z */
 	porA->PMUX[3].bit.PMUXE = 0;	//PA06 EXTINT[6]
@@ -187,9 +205,9 @@ void motor_EIC_setup(void){
 	EIC->CTRLA.bit.CKSEL = 0;	//EIC is clocked by GCLK
 	EIC->INTENSET.reg |= 1<<6 | 1<<4;
 	EIC->ASYNCH.reg |= 1<<6 | 1<<4;	//asynchronous mode
-	EIC->CONFIG[0].bit.SENSE6 = 2;	//4=high level detection 1=rising edge 2= falling edge
-	EIC->CONFIG[0].bit.SENSE4 = 2;	//4=high level detection 1=rising edge 2= falling edge
-	EIC->CTRLA.reg = 1<<1;	//enable
+	EIC->CONFIG[0].bit.SENSE6 = 1;	//4=high level detection 1=rising edge 2= falling edge
+	EIC->CONFIG[0].bit.SENSE4 = 1;	//4=high level detection 1=rising edge 2= falling edge
+	EIC->CTRLA.reg |= 1<<1;	//enable
 	while(EIC->SYNCBUSY.reg){}
 	NVIC->ISER[0] |= 1<<18 | 1<<16;	//enable the NVIC handler
 }
@@ -198,7 +216,7 @@ void motor_EIC_setup(void){
 void EIC_6_Handler(void){
 	Port *por = PORT;
 	PortGroup *porB = &(por->Group[1]);
-	EIC->INTFLAG.reg = 1<<6;	//clear int flag
+	EIC->INTFLAG.reg |= 1<<6;	//clear int flag
 	//convert(pls_counter);
 	Z = 1;
 	//if(eic_counter==200){
@@ -220,7 +238,7 @@ void EIC_6_Handler(void){
 
 /* EIC handler for encoder */
 void EIC_4_Handler(void){
-	EIC->INTFLAG.reg = 1<<4;	//clear int flag
+	EIC->INTFLAG.reg |= 1<<4;	//clear int flag
 	eic_counter++;
 }
 
@@ -339,27 +357,112 @@ void home(void){
 	PortGroup *porA = &(por->Group[0]);
 	PortGroup *porB = &(por->Group[1]);
 	volatile int move_home = 0;
+	volatile int motor_state = 0;
 	Z = 0;
+	volatile int temp =  0;
 	
 	while(!Z){
 		switch(motor_state){
 			case 0:	//idle
 				porB->OUTCLR.reg = PLS;
 				motor_state = 1;
+				wait(1);
 				break;
 			case 1: //move motor
 				porB->OUTSET.reg = PLS;
 				motor_state = 0;
+				temp ++;
+				wait(1);
 				break;
 			default:
 				motor_state = 0;
 				break;
 		}
-		wait(1);
+		
 	}
 	
-	porB->OUTSET.reg = DIR;
-	while(move_home != 66){
+	eic_counter = 0;
+	porB->OUTCLR.reg = DIR;
+	while(eic_counter < 34){
+		switch(motor_state){
+			case 0:	//idle
+				porB->OUTCLR.reg = PLS;
+				motor_state = 1;
+				wait(1);
+				break;
+			case 1: //move motor
+				porB->OUTSET.reg = PLS;
+				move_home++;
+				motor_state = 0;
+				wait(1);
+				break;
+			default:
+				motor_state = 0;
+				break;
+		}
+		
+	}
+}
+
+
+
+void change_filter(int a){
+	Port *por = PORT;
+	PortGroup *porA = &(por->Group[0]);
+	PortGroup *porB = &(por->Group[1]);
+	volatile int accel_state = 0;
+	volatile int motor_state = 0;
+	volatile int temp = 0;
+	volatile int steps;
+	eic_counter = 0;
+	
+	
+	if(a > current_filter){
+		porB->OUTCLR.reg = DIR;	//CW
+		steps = (a-current_filter)*67;
+	}	
+	else{
+		porB->OUTSET.reg = DIR;	//CCW
+		steps = (current_filter-a)*67;
+	}	
+		
+	while(eic_counter < (steps+1)){
+		switch(accel_state){
+			case 0:	//slow start
+				if(eic_counter>=10){
+					accel_state = 1;}
+				else{
+					accel_state = 0;}
+				break;
+			case 1:	//accel
+				if(eic_counter>=(steps/2))
+					{accel_state = 3;}
+				else if(speed<=100){
+					accel_state = 2;
+					temp = eic_counter-10;}
+				else{
+					accel_state = 1;
+					speed = speed-10;}
+				break; 				
+			case 2:	//fast
+				if(eic_counter>=(steps-10-temp)){
+					accel_state = 3;}
+				else{
+					accel_state = 2;}
+				break;
+			case 3:	//decel
+				if(speed>=1000 || ((steps-eic_counter)<=10)){
+					accel_state = 4;}
+				else{
+					accel_state = 3;
+					speed = speed+10;}
+				break;
+			case 4:	//slow finish
+				break;
+			default :
+				break;	
+		}
+		
 		switch(motor_state){
 			case 0:	//idle
 				porB->OUTCLR.reg = PLS;
@@ -367,37 +470,47 @@ void home(void){
 				break;
 			case 1: //move motor
 				porB->OUTSET.reg = PLS;
-				move_home++;
+				//move_filter++;
 				motor_state = 0;
 				break;
 			default:
 				motor_state = 0;
 		}
-		wait(1);
+		accel_wait(speed);
+	}
+	current_filter = a;
+}
+
+void accel_wait(volatile int d){
+	int count = 0;
+	
+	while (count < speed){
+		count++;
 	}
 }
 
-void change_filter(int a){
-	Port *por = PORT;
-	PortGroup *porA = &(por->Group[0]);
-	PortGroup *porB = &(por->Group[1]);
-	volatile int move_filter = 0;
-	
-	porB->OUTSET.reg = DIR;
-	while(move_filter != 133*a){
-		switch(motor_state){
-			case 0:	//idle
-			porB->OUTCLR.reg = PLS;
-			motor_state = 1;
-			break;
-			case 1: //move motor
-			porB->OUTSET.reg = PLS;
-			move_filter++;
-			motor_state = 0;
-			break;
-			default:
-			motor_state = 0;
-		}
-		wait(1);
-	}
-}
+//void change_filter(int a){
+//Port *por = PORT;
+//PortGroup *porA = &(por->Group[0]);
+//PortGroup *porB = &(por->Group[1]);
+//volatile int move_filter = 0;
+//
+//eic_counter = 0;
+//porB->OUTCLR.reg = DIR;
+//while(eic_counter < ((66*a)+1)){
+//switch(motor_state){
+//case 0:	//idle
+//porB->OUTCLR.reg = PLS;
+//motor_state = 1;
+//break;
+//case 1: //move motor
+//porB->OUTSET.reg = PLS;
+////move_filter++;
+//motor_state = 0;
+//break;
+//default:
+//motor_state = 0;
+//}
+//wait(1);
+//}
+//}
